@@ -307,6 +307,10 @@ class Level:
 	def player_add(self,item):
 
 		self.player.item_inventory[item] += 1
+		try:
+			self.success.set_volume(SFX_VOLUME)
+		except Exception:
+			pass
 		self.success.play()
 
 	def toggle_shop(self):

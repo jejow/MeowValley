@@ -249,6 +249,14 @@ class StartMenu:
 					return None
 				if current_opt == 'Resolusi':
 					self.res_index = (self.res_index + 1) % len(self.resolutions)
+					try:
+						save_system.save_settings({
+							'resolution': list(self.resolutions[self.res_index]),
+							'music_volume': float(settings.MUSIC_VOLUME),
+							'sfx_volume': float(settings.SFX_VOLUME),
+						})
+					except Exception:
+						pass
 					return ('resolution', self.resolutions[self.res_index])
 				if current_opt == 'Volume Music':
 					settings.MUSIC_VOLUME = min(1.0, settings.MUSIC_VOLUME + 0.1)
@@ -256,9 +264,25 @@ class StartMenu:
 						pygame.mixer.music.set_volume(settings.MUSIC_VOLUME)
 					except:
 						pass
+					try:
+						save_system.save_settings({
+							'resolution': [int(settings.SCREEN_WIDTH), int(settings.SCREEN_HEIGHT)],
+							'music_volume': float(settings.MUSIC_VOLUME),
+							'sfx_volume': float(settings.SFX_VOLUME),
+						})
+					except Exception:
+						pass
 					return None
 				if current_opt == 'Volume SFX':
 					settings.SFX_VOLUME = min(1.0, settings.SFX_VOLUME + 0.1)
+					try:
+						save_system.save_settings({
+							'resolution': [int(settings.SCREEN_WIDTH), int(settings.SCREEN_HEIGHT)],
+							'music_volume': float(settings.MUSIC_VOLUME),
+							'sfx_volume': float(settings.SFX_VOLUME),
+						})
+					except Exception:
+						pass
 					return None
 			else:
 				if self.page == 'load':

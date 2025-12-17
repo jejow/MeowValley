@@ -101,6 +101,10 @@ class Tree(Generic):
 		self.health -= 1
 
 		# play sound
+		try:
+			self.axe_sound.set_volume(SFX_VOLUME)
+		except Exception:
+			pass
 		self.axe_sound.play()
 
 		# remove an apple

@@ -100,6 +100,10 @@ class SoilLayer:
 	def get_hit(self, point):
 		for rect in self.hit_rects:
 			if rect.collidepoint(point):
+				try:
+					self.hoe_sound.set_volume(SFX_VOLUME)
+				except Exception:
+					pass
 				self.hoe_sound.play()
 
 				x = rect.x // TILE_SIZE
@@ -154,6 +158,10 @@ class SoilLayer:
 	def plant_seed(self, target_pos, seed):
 		for soil_sprite in self.soil_sprites.sprites():
 			if soil_sprite.rect.collidepoint(target_pos):
+				try:
+					self.plant_sound.set_volume(SFX_VOLUME)
+				except Exception:
+					pass
 				self.plant_sound.play()
 
 				x = soil_sprite.rect.x // TILE_SIZE

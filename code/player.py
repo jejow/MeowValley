@@ -78,6 +78,10 @@ class Player(pygame.sprite.Sprite):
 		
 		if self.selected_tool == 'water':
 			self.soil_layer.water(self.target_pos)
+			try:
+				self.watering.set_volume(SFX_VOLUME)
+			except Exception:
+				pass
 			self.watering.play()
 
 	def get_target_pos(self):
