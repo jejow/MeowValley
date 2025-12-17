@@ -1,193 +1,227 @@
 import pygame
-import os
 from settings import *
+from support import *
+from timer import Timer
 
 class Player(pygame.sprite.Sprite):
-    def __init__(self, pos, group): # [UPDATE] Tambah parameter group
-        super().__init__(group)     # [UPDATE] Masukkan ke group sprite
+	def __init__(self, pos, group, collision_sprites, tree_sprites, interaction, soil_layer, toggle_shop):
+		super().__init__(group)
 
-        # ===== LOAD ASSETS =====
-        self.import_assets()
-        self.frame_index = 0
-        self.animation_speed = 6
+		self.import_assets()
+		self.status = 'down_idle'
+		self.frame_index = 0
 
-        # Setup Image Awal (Pakai animasi idle pertama)
-        if self.animations['idle']:
-            self.image = self.animations['idle'][0]
-        else:
-            # Fallback jika gambar benar-benar tidak ketemu (Kotak Merah)
-            self.image = pygame.Surface((32, 64))
-            self.image.fill('red')
-            
-        self.rect = self.image.get_rect(center=pos)
+		# general setup
+		self.image = self.animations[self.status][self.frame_index]
+		self.rect = self.image.get_rect(center = pos)
+		self.z = LAYERS['main']
 
-        # ===== MOVEMENT =====
-        self.direction = pygame.math.Vector2()
-        self.speed = 200 
+		# movement attributes
+		self.direction = pygame.math.Vector2()
+		self.pos = pygame.math.Vector2(self.rect.center)
+		self.speed = 200
 
-        # ===== STATUS =====
-        self.status = 'idle'
-        self.facing_right = True
+		# collision
+		self.hitbox = self.rect.copy().inflate((-126,-70))
+		self.collision_sprites = collision_sprites
 
-        # ===== SYSTEM ALAT (TOOLS) =====
-        self.tools = ['hoe', 'axe', 'water', 'sword']
-        self.tool_index = 0
-        self.selected_tool = self.tools[self.tool_index]
+		# timers 
+		self.timers = {
+			'tool use': Timer(350,self.use_tool),
+			'tool switch': Timer(200),
+			'seed use': Timer(350,self.use_seed),
+			'seed switch': Timer(200),
+		}
 
-        # ===== SYSTEM BENIH (SEEDS) =====
-        self.seeds = ['corn', 'tomato']
-        self.seed_index = 0
-        self.selected_seed = self.seeds[self.seed_index]
+		# tools 
+		self.tools = ['hoe','axe','water']
+		self.tool_index = 0
+		self.selected_tool = self.tools[self.tool_index]
 
-        # ===== TIMERS =====
-        self.timers = {
-            'tool_switch': 0,
-            'seed_switch': 0,
-            'tool_use': 0 # [BARU] Timer durasi pakai alat
-        }
+		# seeds 
+		self.seeds = ['corn', 'tomato']
+		self.seed_index = 0
+		self.selected_seed = self.seeds[self.seed_index]
 
-        # [BARU] Flag status sedang pakai alat
-        self.use_tool_active = False 
+		# inventory
+		self.item_inventory = {
+			'wood':   20,
+			'apple':  20,
+			'corn':   20,
+			'tomato': 20
+		}
+		self.seed_inventory = {
+		'corn': 5,
+		'tomato': 5
+		}
+		self.money = 200
 
-    def import_assets(self):
-        self.animations = {
-            'idle': [],
-            'walk': []
-        }
+		# interaction
+		self.tree_sprites = tree_sprites
+		self.interaction = interaction
+		self.sleep = False
+		self.soil_layer = soil_layer
+		self.toggle_shop = toggle_shop
 
-        # --- SMART PATH FINDER (GPS PINTAR) ---
-        current_dir = os.path.dirname(os.path.abspath(__file__)) 
-        
-        possible_paths = [
-            os.path.join(current_dir, 'graphics', 'player'),
-            os.path.join(current_dir, '..', 'graphics', 'player'),
-            os.path.join(current_dir, '..', 'graphics', 'character'),
-            os.path.join(current_dir, '..', 'data', 'graphics', 'player')
-        ]
+		# sound
+		self.watering = pygame.mixer.Sound('../audio/water.mp3')
+		self.watering.set_volume(SFX_VOLUME)
 
-        player_path = None
-        for path in possible_paths:
-            if os.path.exists(path):
-                player_path = path
-                print(f"DEBUG: Gambar Player ditemukan di: {player_path}")
-                break
-        
-        if not player_path:
-            print("ERROR FATAL: Folder gambar player tidak ditemukan!")
-            dummy = pygame.Surface((32, 64))
-            dummy.fill('red')
-            self.animations['idle'].append(dummy)
-            self.animations['walk'].append(dummy)
-            return
+	def use_tool(self):
+		if self.selected_tool == 'hoe':
+			self.soil_layer.get_hit(self.target_pos)
+		
+		if self.selected_tool == 'axe':
+			for tree in self.tree_sprites.sprites():
+				if tree.rect.collidepoint(self.target_pos):
+					tree.damage()
+		
+		if self.selected_tool == 'water':
+			self.soil_layer.water(self.target_pos)
+			self.watering.play()
 
-        # LOAD GAMBAR
-        try:
-            path = os.path.join(player_path, '0.png')
-            if os.path.exists(path):
-                self.animations['idle'].append(pygame.image.load(path).convert_alpha())
-        except: pass
+	def get_target_pos(self):
 
-        for i in range(1, 4):
-            path = os.path.join(player_path, f'{i}.png')
-            if os.path.exists(path):
-                try:
-                    self.animations['walk'].append(pygame.image.load(path).convert_alpha())
-                except: pass
-            
-        if not self.animations['walk']:
-            self.animations['walk'] = self.animations['idle']
+		self.target_pos = self.rect.center + PLAYER_TOOL_OFFSET[self.status.split('_')[0]]
 
-    def update_timers(self, dt):
-        for timer in self.timers:
-            if self.timers[timer] > 0:
-                self.timers[timer] -= dt
-        
-        # [BARU] Reset status pakai alat jika timer habis
-        if self.timers['tool_use'] <= 0:
-            self.use_tool_active = False
+	def use_seed(self):
+		if self.seed_inventory[self.selected_seed] > 0:
+			self.soil_layer.plant_seed(self.target_pos, self.selected_seed)
+			self.seed_inventory[self.selected_seed] -= 1
 
-    # [BARU] HITUNG POSISI TARUH TANAH/CANGKUL
-    def get_target_pos(self):
-        offset = pygame.math.Vector2()
-        
-        if self.status == 'idle':
-            if self.facing_right: offset.x = 1
-            else: offset.x = -1
-        else:
-            if self.direction.x != 0: offset.x = self.direction.x
-            if self.direction.y != 0: offset.y = self.direction.y
+	def import_assets(self):
+		self.animations = {'up': [],'down': [],'left': [],'right': [],
+						   'right_idle':[],'left_idle':[],'up_idle':[],'down_idle':[],
+						   'right_hoe':[],'left_hoe':[],'up_hoe':[],'down_hoe':[],
+						   'right_axe':[],'left_axe':[],'up_axe':[],'down_axe':[],
+						   'right_water':[],'left_water':[],'up_water':[],'down_water':[]}
 
-        # Target = Posisi Player + (Arah * Jarak 40px)
-        return self.rect.center + offset * 40
+		for animation in self.animations.keys():
+			full_path = '../graphics/character/' + animation
+			self.animations[animation] = import_folder(full_path)
 
-    def input(self):
-        keys = pygame.key.get_pressed()
-        
-        # [UPDATE] Hanya bisa gerak jika TIDAK sedang pakai alat
-        if not self.use_tool_active:
-            self.direction.update(0, 0)
+	def animate(self,dt):
+		self.frame_index += 4 * dt
+		if self.frame_index >= len(self.animations[self.status]):
+			self.frame_index = 0
 
-            # MOVEMENT
-            if keys[pygame.K_d] or keys[pygame.K_RIGHT]:
-                self.direction.x = 1
-                self.facing_right = True
-            elif keys[pygame.K_a] or keys[pygame.K_LEFT]:
-                self.direction.x = -1
-                self.facing_right = False
+		self.image = self.animations[self.status][int(self.frame_index)]
 
-            if keys[pygame.K_s] or keys[pygame.K_DOWN]:
-                self.direction.y = 1
-            elif keys[pygame.K_w] or keys[pygame.K_UP]:
-                self.direction.y = -1
+	def input(self):
+		keys = pygame.key.get_pressed()
 
-            # SWITCH ALAT (Q)
-            if keys[pygame.K_q] and self.timers['tool_switch'] <= 0:
-                self.tool_index = (self.tool_index + 1) % len(self.tools)
-                self.selected_tool = self.tools[self.tool_index]
-                self.timers['tool_switch'] = 0.3
-                print(f"Alat: {self.selected_tool}")
+		if not self.timers['tool use'].active and not self.sleep:
+			# directions 
+			if keys[pygame.K_UP]:
+				self.direction.y = -1
+				self.status = 'up'
+			elif keys[pygame.K_DOWN]:
+				self.direction.y = 1
+				self.status = 'down'
+			else:
+				self.direction.y = 0
 
-            # SWITCH BENIH (E)
-            if keys[pygame.K_e] and self.timers['seed_switch'] <= 0:
-                self.seed_index = (self.seed_index + 1) % len(self.seeds)
-                self.selected_seed = self.seeds[self.seed_index]
-                self.timers['seed_switch'] = 0.3
-                print(f"Benih: {self.selected_seed}")
+			if keys[pygame.K_RIGHT]:
+				self.direction.x = 1
+				self.status = 'right'
+			elif keys[pygame.K_LEFT]:
+				self.direction.x = -1
+				self.status = 'left'
+			else:
+				self.direction.x = 0
 
-            # [BARU] PAKAI ALAT / MENCANGKUL (SPASI)
-            if keys[pygame.K_SPACE] and self.timers['tool_use'] <= 0:
-                self.timers['tool_use'] = 0.5 # Durasi animasi mencangkul
-                self.use_tool_active = True   # Kunci gerakan
-                self.direction = pygame.math.Vector2() # Stop jalan
-                self.frame_index = 0 # Reset animasi
+			# tool use
+			if keys[pygame.K_SPACE]:
+				self.timers['tool use'].activate()
+				self.direction = pygame.math.Vector2()
+				self.frame_index = 0
 
-        # STATUS UPDATE
-        if self.direction.length() > 0:
-            self.direction = self.direction.normalize()
-            self.status = 'walk'
-        else:
-            self.status = 'idle'
+			# change tool
+			if keys[pygame.K_q] and not self.timers['tool switch'].active:
+				self.timers['tool switch'].activate()
+				self.tool_index += 1
+				self.tool_index = self.tool_index if self.tool_index < len(self.tools) else 0
+				self.selected_tool = self.tools[self.tool_index]
 
-    def move(self, dt):
-        self.rect.center += self.direction * self.speed * dt
+			# seed use
+			if keys[pygame.K_LCTRL]:
+				self.timers['seed use'].activate()
+				self.direction = pygame.math.Vector2()
+				self.frame_index = 0
 
-    def animate(self, dt):
-        animation = self.animations[self.status]
-        if not animation: return
+			# change seed 
+			if keys[pygame.K_e] and not self.timers['seed switch'].active:
+				self.timers['seed switch'].activate()
+				self.seed_index += 1
+				self.seed_index = self.seed_index if self.seed_index < len(self.seeds) else 0
+				self.selected_seed = self.seeds[self.seed_index]
 
-        self.frame_index += self.animation_speed * dt
-        if self.frame_index >= len(animation):
-            self.frame_index = 0
+			if keys[pygame.K_RETURN]:
+				collided_interaction_sprite = pygame.sprite.spritecollide(self,self.interaction,False)
+				if collided_interaction_sprite:
+					if collided_interaction_sprite[0].name == 'Trader':
+						self.toggle_shop()
+					else:
+						self.status = 'left_idle'
+						self.sleep = True
 
-        image = animation[int(self.frame_index)]
+	def get_status(self):
+		
+		# idle
+		if self.direction.magnitude() == 0:
+			self.status = self.status.split('_')[0] + '_idle'
 
-        if not self.facing_right:
-            image = pygame.transform.flip(image, True, False)
+		# tool use
+		if self.timers['tool use'].active:
+			self.status = self.status.split('_')[0] + '_' + self.selected_tool
 
-        self.image = image
+	def update_timers(self):
+		for timer in self.timers.values():
+			timer.update()
 
-    def update(self, dt):
-        self.input()
-        self.update_timers(dt)
-        self.move(dt)
-        self.animate(dt)
+	def collision(self, direction):
+		for sprite in self.collision_sprites.sprites():
+			if hasattr(sprite, 'hitbox'):
+				if sprite.hitbox.colliderect(self.hitbox):
+					if direction == 'horizontal':
+						if self.direction.x > 0: # moving right
+							self.hitbox.right = sprite.hitbox.left
+						if self.direction.x < 0: # moving left
+							self.hitbox.left = sprite.hitbox.right
+						self.rect.centerx = self.hitbox.centerx
+						self.pos.x = self.hitbox.centerx
+
+					if direction == 'vertical':
+						if self.direction.y > 0: # moving down
+							self.hitbox.bottom = sprite.hitbox.top
+						if self.direction.y < 0: # moving up
+							self.hitbox.top = sprite.hitbox.bottom
+						self.rect.centery = self.hitbox.centery
+						self.pos.y = self.hitbox.centery
+
+	def move(self,dt):
+
+		# normalizing a vector 
+		if self.direction.magnitude() > 0:
+			self.direction = self.direction.normalize()
+
+		# horizontal movement
+		self.pos.x += self.direction.x * self.speed * dt
+		self.hitbox.centerx = round(self.pos.x)
+		self.rect.centerx = self.hitbox.centerx
+		self.collision('horizontal')
+
+		# vertical movement
+		self.pos.y += self.direction.y * self.speed * dt
+		self.hitbox.centery = round(self.pos.y)
+		self.rect.centery = self.hitbox.centery
+		self.collision('vertical')
+
+	def update(self, dt):
+		self.input()
+		self.get_status()
+		self.update_timers()
+		self.get_target_pos()
+
+		self.move(dt)
+		self.animate(dt)

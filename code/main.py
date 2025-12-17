@@ -1,274 +1,313 @@
-import pygame
-import sys
-import math
 import os
-import datetime 
-import random # [BARU] Untuk simulasi hasil panen
-from settings import *
-from level import Level
-from menu import Menu
+import pygame, sys
+import importlib
+
+import settings
+from start_menu import StartMenu
+from pause_menu import PauseMenu
+import save_system
 
 class Game:
-    def __init__(self):
-        pygame.init()
+	def __init__(self):
+		pygame.init()
+		# Make relative paths in the existing codebase stable
+		os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
-        # ===== WINDOW =====
-        self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
-        pygame.display.set_caption('Meow Valley')
-        self.clock = pygame.time.Clock()
+		# Load persisted settings (resolution + volumes) before creating the window
+		cfg = save_system.load_settings() or {}
+		try:
+			res = cfg.get('resolution')
+			if isinstance(res, (list, tuple)) and len(res) == 2:
+				settings.set_resolution(int(res[0]), int(res[1]))
+		except Exception:
+			pass
+		try:
+			if 'music_volume' in cfg:
+				settings.MUSIC_VOLUME = float(cfg['music_volume'])
+			if 'sfx_volume' in cfg:
+				settings.SFX_VOLUME = float(cfg['sfx_volume'])
+		except Exception:
+			pass
 
-        # ===== STATE =====
-        self.game_active = False
-        self.history_open = False 
-        self.level = Level()
+		self.screen = pygame.display.set_mode((settings.SCREEN_WIDTH, settings.SCREEN_HEIGHT))
+		pygame.display.set_caption('Meow Valley')
+		self.clock = pygame.time.Clock()
+		self.level = None
+		self.in_menu = True
+		self.paused = False
+		self.pause_menu = None
+		self.last_game_frame = None
+		self.current_save_slot = None
+		self.menu = StartMenu()
+		self.menu.refresh_save_state()
+		self.menu.start_music()
 
-        # ===== SETUP PATH PINTAR =====
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        
-        def get_file_path(filename, subfolders=None):
-            if subfolders:
-                path1 = os.path.join(current_dir, subfolders, filename)
-                root_dir = os.path.dirname(current_dir)
-                path2 = os.path.join(root_dir, subfolders, filename)
-                path3 = os.path.join(root_dir, 'data', subfolders, filename)
-            else:
-                path1 = os.path.join(current_dir, filename)
-                root_dir = os.path.dirname(current_dir)
-                path2 = os.path.join(root_dir, filename)
-                path3 = None
+	def _reload_gameplay_modules(self):
+		# Needed because many modules use `from settings import *`.
+		# Reloading re-reads the updated settings (e.g., resolution) before creating a new Level.
+		module_names = [
+			'sprites',
+			'soil',
+			'player',
+			'overlay',
+			'sky',
+			'transition',
+			'menu',
+			'level',
+		]
+		for name in module_names:
+			mod = sys.modules.get(name)
+			if mod is None:
+				continue
+			try:
+				importlib.reload(mod)
+			except Exception:
+				pass
 
-            if os.path.exists(path1): return path1
-            if os.path.exists(path2): return path2
-            if path3 and os.path.exists(path3): return path3
-            return os.path.join(current_dir, filename)
+	def apply_resolution(self, width: int, height: int):
+		# IMPORTANT: This must happen before importing Level (which reads settings via star-imports)
+		settings.set_resolution(width, height)
+		self.screen = pygame.display.set_mode((settings.SCREEN_WIDTH, settings.SCREEN_HEIGHT))
+		self.menu.set_display_surface()
+		try:
+			save_system.save_settings({
+				'resolution': [int(settings.SCREEN_WIDTH), int(settings.SCREEN_HEIGHT)],
+				'music_volume': float(settings.MUSIC_VOLUME),
+				'sfx_volume': float(settings.SFX_VOLUME),
+			})
+		except Exception:
+			pass
 
-        # Cari lokasi Aset
-        font_path = get_file_path('LycheeSoda.ttf', 'font')
-        bg_path = get_file_path('menu_bg.png', 'graphics')
-        cloud_path = get_file_path('cloud_small.png', 'graphics')
-        self.history_path = get_file_path('history.txt')
+	def start_game(self, saved_level_state=None):
+		# Stop menu music so it doesn't overlap with in-game music
+		self.menu.stop_music()
+		# Lazy import so all star-imports inside the game code see the chosen resolution
+		from level import Level
+		self.level = Level()
+		if saved_level_state is not None:
+			try:
+				self.level.apply_state(saved_level_state)
+			except Exception:
+				pass
+		self.in_menu = False
+		self.paused = False
+		self.last_game_frame = None
 
-        # ===== LOAD FONT =====
-        if font_path and os.path.exists(font_path):
-            self.title_font = pygame.font.Font(font_path, 120)
-            self.menu_font = pygame.font.Font(font_path, 40)
-            self.history_font = pygame.font.Font(font_path, 25) # Ukuran font riwayat disesuaikan
-        else:
-            self.title_font = pygame.font.SysFont(None, 100)
-            self.menu_font = pygame.font.SysFont(None, 40)
-            self.history_font = pygame.font.SysFont(None, 25)
+	def save_current_game(self):
+		if self.level is None:
+			return
+		if self.current_save_slot is None:
+			return
+		self.save_current_game_to_slot(self.current_save_slot)
 
-        # ===== LOAD MENU =====
-        self.menu = Menu(self.menu_font)
+	def save_current_game_to_slot(self, slot: int):
+		if self.level is None:
+			return
+		try:
+			payload = {
+				'settings': {
+					'resolution': [int(settings.SCREEN_WIDTH), int(settings.SCREEN_HEIGHT)],
+					'music_volume': float(settings.MUSIC_VOLUME),
+					'sfx_volume': float(settings.SFX_VOLUME),
+				},
+				'level': self.level.serialize_state(),
+			}
+			save_system.save_game_slot(int(slot), payload)
+			self.current_save_slot = int(slot)
+			self.menu.refresh_save_state()
+			if self.pause_menu:
+				self.pause_menu.refresh_slots()
+		except Exception:
+			pass
 
-        # ===== LOAD BACKGROUND & CLOUD =====
-        self.menu_bg = None
-        if bg_path and os.path.exists(bg_path):
-            try:
-                img = pygame.image.load(bg_path).convert()
-                self.menu_bg = pygame.transform.scale(img, (SCREEN_WIDTH, SCREEN_HEIGHT))
-            except: pass
+	def load_game_from_slot(self, slot: int, from_pause: bool):
+		data = save_system.load_game_slot(int(slot)) or {}
+		if not isinstance(data, dict):
+			return
+		saved_settings = data.get('settings', {}) if isinstance(data.get('settings', {}), dict) else {}
 
-        self.cloud_surf = None
-        if cloud_path and os.path.exists(cloud_path):
-            try:
-                img = pygame.image.load(cloud_path).convert_alpha()
-                self.cloud_surf = pygame.transform.scale(img, (200, 100))
-            except: pass
+		# Apply saved settings BEFORE recreating Level
+		try:
+			res = saved_settings.get('resolution')
+			if isinstance(res, (list, tuple)) and len(res) == 2:
+				settings.set_resolution(int(res[0]), int(res[1]))
+				self.screen = pygame.display.set_mode((settings.SCREEN_WIDTH, settings.SCREEN_HEIGHT))
+				self.menu.set_display_surface()
+				if self.pause_menu:
+					self.pause_menu.set_display_surface()
+		except Exception:
+			pass
+		try:
+			if 'music_volume' in saved_settings:
+				settings.MUSIC_VOLUME = float(saved_settings['music_volume'])
+			if 'sfx_volume' in saved_settings:
+				settings.SFX_VOLUME = float(saved_settings['sfx_volume'])
+		except Exception:
+			pass
 
-        self.clouds = [
-            {'x': SCREEN_WIDTH * 0.5, 'y': 60, 'speed': 30},
-            {'x': -220, 'y': 140, 'speed': 20},
-        ]
+		# Persist settings too
+		try:
+			save_system.save_settings({
+				'resolution': [int(settings.SCREEN_WIDTH), int(settings.SCREEN_HEIGHT)],
+				'music_volume': float(settings.MUSIC_VOLUME),
+				'sfx_volume': float(settings.SFX_VOLUME),
+			})
+		except Exception:
+			pass
 
-    # [BARU] Fungsi Membuat Laporan Panen ala Stardew Valley
-    def create_harvest_report(self):
-        # Karena kita belum menyambungkan ke Inventory asli,
-        # Kita buat simulasi acak dulu agar kamu bisa lihat hasilnya di menu.
-        
-        crops = [
-            ("Jagung", "🌽"), 
-            ("Tomat", "🍅"), 
-            ("Wortel", "🥕"), 
-            ("Terong", "🍆"), 
-            ("Labu", "🎃")
-        ]
-        
-        # Pilih 2 tanaman acak yang "seolah-olah" dipanen sesi ini
-        panen_hari_ini = random.sample(crops, 2)
-        jumlah1 = random.randint(2, 10)
-        jumlah2 = random.randint(1, 5)
+		# Stop current gameplay music if any
+		if from_pause:
+			try:
+				if self.level is not None and hasattr(self.level, 'music'):
+					self.level.music.stop()
+			except Exception:
+				pass
 
-        laporan = f"{panen_hari_ini[0][1]} {jumlah1} {panen_hari_ini[0][0]} & {panen_hari_ini[1][1]} {jumlah2} {panen_hari_ini[1][0]}"
-        return laporan
+		# Reload gameplay modules so star-import settings are refreshed
+		self._reload_gameplay_modules()
+		self.current_save_slot = int(slot)
+		self.start_game(saved_level_state=(data.get('level') if isinstance(data, dict) else None))
 
-    # [UPDATE] Fungsi Simpan Riwayat
-    def save_history(self):
-        now = datetime.datetime.now()
-        date_str = now.strftime("%d/%m %H:%M") # Format: Tanggal/Bulan Jam:Menit
-        
-        # Ambil laporan panen
-        hasil_tani = self.create_harvest_report()
-        
-        entry = f"[{date_str}] Panen: {hasil_tani}\n"
-        
-        try:
-            with open(self.history_path, 'a', encoding='utf-8') as f: # Pakai utf-8 biar emoji muncul
-                f.write(entry)
-            print("Riwayat disimpan!")
-        except Exception as e:
-            print(f"Gagal menyimpan riwayat: {e}")
+	def enter_pause(self):
+		if self.in_menu or self.level is None:
+			return
+		self.paused = True
+		if self.pause_menu is None:
+			self.pause_menu = PauseMenu()
+		else:
+			self.pause_menu.set_display_surface()
+		try:
+			pygame.mixer.pause()
+		except:
+			pass
 
-    # [UPDATE] Fungsi Simpan Riwayat (Ambil Data Asli Level)
-    def save_history(self):
-        now = datetime.datetime.now()
-        date_str = now.strftime("%d/%m %H:%M") 
-        
-        # 1. AMBIL DATA DARI LEVEL
-        tas = self.level.panen_sesi_ini
-        
-        # 2. Susun Kalimat Laporan dipanen?
-        total_panen = tas['Jagung'] + tas['Tomat'] + tas['Wortel']
-        
-        if total_panen == 0:
-            laporan = "Tidak ada hasil panen."
-        else:
-            item_list = []
-            if tas['Jagung'] > 0: item_list.append(f"🌽 {tas['Jagung']} Jagung")
-            if tas['Tomat'] > 0: item_list.append(f"🍅 {tas['Tomat']} Tomat")
-            if tas['Wortel'] > 0: item_list.append(f"🥕 {tas['Wortel']} Wortel")
-            
-            laporan = " & ".join(item_list) # Gabungkan dengan tanda '&'
+	def resume_from_pause(self):
+		self.paused = False
+		try:
+			pygame.mixer.unpause()
+		except:
+			pass
 
-        entry = f"[{date_str}] {laporan}\n"
-        
-        try:
-            with open(self.history_path, 'a', encoding='utf-8') as f:
-                f.write(entry)
-            print("Riwayat disimpan!")
-            
-            # [PENTING] Kosongkan tas setelah disimpan
-            self.level.reset_panen()
-            
-        except Exception as e:
-            print(f"Gagal menyimpan riwayat: {e}")
+	def return_to_menu(self):
+		# Ensure audio is running again for menu music
+		try:
+			pygame.mixer.unpause()
+		except:
+			pass
+		try:
+			if self.level is not None and hasattr(self.level, 'music'):
+				self.level.music.stop()
+		except:
+			pass
+		self.level = None
+		self.paused = False
+		self.in_menu = True
+		self.last_game_frame = None
+		# Reset menu state and start its music
+		try:
+			self.menu.page = 'main'
+			self.menu.index = 0
+		except:
+			pass
+		self.menu.start_music(force=True)
 
-    def run(self):
-        while True:
-            dt = self.clock.tick(FPS) / 1000
+	def run(self):
+		while True:
+			for event in pygame.event.get():
+				if event.type == pygame.QUIT:
+					# Best-effort save if player closes the window mid-game (only if a slot is selected)
+					if not self.in_menu:
+						self.save_current_game()
+					self.menu.stop_music()
+					pygame.quit()
+					sys.exit()
 
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    # Simpan riwayat jika keluar paksa (tombol X) saat sedang main
-                    if self.game_active:
-                        self.save_history()
-                    pygame.quit()
-                    sys.exit()
-
-                # --- INPUT HANDLER ---
-                if not self.game_active:
-                    
-                    if self.history_open:
-                        if event.type == pygame.KEYDOWN:
-                            if event.key in [pygame.K_ESCAPE, pygame.K_SPACE, pygame.K_RETURN]:
-                                self.history_open = False 
-
-                    else:
-                        action = self.menu.input(event)
-                        
-                        if action in ['Start', 'Mulai Game', 'Main']: 
-                            self.game_active = True
-                        
-                        elif action in ['Riwayat Bermain', 'History', 'Riwayat']:
-                            self.history_open = True 
-                        
-                        elif action in ['Exit', 'Keluar']:
-                            # [PENTING] Simpan riwayat saat tombol Keluar ditekan
-                            # (Asumsinya kamu baru selesai main lalu balik menu dan keluar)
-                            # Untuk tes sekarang, ini akan generate data acak.
-                            self.save_history() 
-                            pygame.quit()
-                            sys.exit()
-                else:
-                    # Jika sedang main dan tekan ESC (opsional, tergantung level.py kamu)
-                    if event.type == pygame.KEYDOWN:
-                         if event.key == pygame.K_ESCAPE:
-                             self.save_history() # Simpan progres sebelum balik menu
-                             self.game_active = False
-
-            # --- DRAWING ---
-            if self.game_active:
-                self.screen.fill('black')
-                self.level.run(dt)
-            else:
-                # Background & Cloud
-                if self.menu_bg: self.screen.blit(self.menu_bg, (0, 0))
-                else: self.screen.fill('#87CEEB')
-
-                if self.cloud_surf:
-                    for cloud in self.clouds:
-                        cloud['x'] += cloud['speed'] * dt
-                        if cloud['x'] > SCREEN_WIDTH + 200: cloud['x'] = -300
-                        self.screen.blit(self.cloud_surf, (cloud['x'], cloud['y']))
-
-                # Judul
-                current_time = pygame.time.get_ticks()
-                title_offset = math.sin(current_time * 0.002) * 6
-                
-                title_shadow = self.title_font.render('MEOW VALLEY', True, 'Black')
-                rect_shadow = title_shadow.get_rect(center=(SCREEN_WIDTH // 2 + 4, 200 + title_offset + 4))
-                self.screen.blit(title_shadow, rect_shadow)
-
-                title = self.title_font.render('MEOW VALLEY', True, '#FFEB3B')
-                rect = title.get_rect(center=(SCREEN_WIDTH // 2, 200 + title_offset))
-                self.screen.blit(title, rect)
-
-                # Animasi Menu
-                menu_surf = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
-                menu_surf.fill((0,0,0,0))
-                try: self.menu.draw(menu_surf, dt)
-                except: self.menu.draw(menu_surf)
-                self.screen.blit(menu_surf, (0, math.sin(current_time * 0.002) * 4))
-
-                # --- POP-UP RIWAYAT HASIL TANI ---
-                if self.history_open:
-                    overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
-                    overlay.set_alpha(180) 
-                    overlay.fill('black')
-                    self.screen.blit(overlay, (0,0))
-
-                    # Kotak Panel Lebih Lebar untuk menampung teks panjang
-                    panel_w, panel_h = 800, 500
-                    panel_rect = pygame.Rect(0, 0, panel_w, panel_h)
-                    panel_rect.center = (SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2)
-                    
-                    # Desain Kayu (Coklat)
-                    pygame.draw.rect(self.screen, '#d4a373', panel_rect, border_radius=15) 
-                    pygame.draw.rect(self.screen, '#8c5e3c', panel_rect, 8, border_radius=15) 
-
-                    # Judul Jurnal
-                    hist_title = self.menu_font.render("JURNAL HASIL PANEN", True, '#5c190b')
-                    hist_title_rect = hist_title.get_rect(center=(SCREEN_WIDTH//2, panel_rect.top + 60))
-                    self.screen.blit(hist_title, hist_title_rect)
-
-                    # Garis Pembatas
-                    pygame.draw.line(self.screen, '#8c5e3c', (panel_rect.left+50, panel_rect.top+90), (panel_rect.right-50, panel_rect.top+90), 4)
-
-                    # Tampilkan Data
-                    history_data = self.get_history_list()
-                    start_y = panel_rect.top + 120
-                    
-                    for i, line in enumerate(history_data):
-                        # Ganti warna teks jadi hitam kecoklatan biar estetik
-                        text_surf = self.history_font.render(line, True, '#3d2b1f')
-                        text_rect = text_surf.get_rect(midleft=(panel_rect.left + 80, start_y + i * 50))
-                        self.screen.blit(text_surf, text_rect)
-                    
-                    close_surf = self.history_font.render("- TEKAN ESC UNTUK TUTUP -", True, '#5c190b')
-                    close_rect = close_surf.get_rect(center=(SCREEN_WIDTH//2, panel_rect.bottom - 50))
-                    self.screen.blit(close_surf, close_rect)
-
-            pygame.display.update()
+				if self.in_menu:
+					action = self.menu.handle_event(event)
+					if action == 'start':
+						self.current_save_slot = None
+						self.start_game()
+					elif isinstance(action, tuple) and action[0] == 'load_slot':
+						slot = int(action[1])
+						self.load_game_from_slot(slot, from_pause=False)
+					elif isinstance(action, tuple) and action[0] == 'delete_slot':
+						slot = int(action[1])
+						try:
+							save_system.delete_slot(slot)
+						except Exception:
+							pass
+						self.menu.refresh_save_state()
+						# keep user on load page after delete
+						try:
+							self.menu.page = 'load'
+						except Exception:
+							pass
+					elif action == 'quit':
+						# Persist settings on exit
+						try:
+							save_system.save_settings({
+								'resolution': [int(settings.SCREEN_WIDTH), int(settings.SCREEN_HEIGHT)],
+								'music_volume': float(settings.MUSIC_VOLUME),
+								'sfx_volume': float(settings.SFX_VOLUME),
+							})
+						except Exception:
+							pass
+						self.menu.stop_music()
+						pygame.quit()
+						sys.exit()
+					elif isinstance(action, tuple) and action[0] == 'resolution':
+						w, h = action[1]
+						self.apply_resolution(w, h)
+				else:
+					if self.paused:
+						action = self.pause_menu.handle_event(event) if self.pause_menu else None
+						if action == 'resume':
+							self.resume_from_pause()
+						elif action == 'menu':
+							self.return_to_menu()
+						elif isinstance(action, tuple) and action[0] == 'save_slot':
+							slot = int(action[1])
+							self.save_current_game_to_slot(slot)
+							if self.pause_menu:
+								self.pause_menu.go_main()
+						elif isinstance(action, tuple) and action[0] == 'delete_slot':
+							slot = int(action[1])
+							try:
+								save_system.delete_slot(slot)
+							except Exception:
+								pass
+							if self.pause_menu:
+								self.pause_menu.refresh_slots()
+								self.pause_menu.page = 'load'
+								self.pause_menu.index = 0
+						elif isinstance(action, tuple) and action[0] == 'load_slot':
+							slot = int(action[1])
+							self.load_game_from_slot(slot, from_pause=True)
+							# Remain unpaused after loading
+							self.paused = False
+					else:
+						if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+							# ESC is also used to close the shop menu; don't pause while shop is open
+							if not (self.level and getattr(self.level, 'shop_active', False)):
+								self.enter_pause()
+  
+			dt = self.clock.tick() / 1000
+			if self.in_menu:
+				self.menu.draw()
+			elif self.paused:
+				if self.pause_menu:
+					self.pause_menu.set_display_surface()
+				self.screen = pygame.display.get_surface()
+				(self.pause_menu.draw(self.last_game_frame) if self.pause_menu else None)
+			else:
+				self.level.run(dt)
+				# Keep a copy for pause background
+				try:
+					self.last_game_frame = self.screen.copy()
+				except:
+					self.last_game_frame = None
+			pygame.display.update()
 
 if __name__ == '__main__':
-    Game().run()
+	game = Game()
+	game.run()
