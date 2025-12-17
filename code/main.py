@@ -104,12 +104,10 @@ class Game:
 		if self.level is None:
 			return
 		try:
+			# IMPORTANT: Settings are global (stored in savegame/config.json).
+			# Do not snapshot settings into the save slot; otherwise loading a slot
+			# can unexpectedly revert the user's current menu settings.
 			payload = {
-				'settings': {
-					'resolution': [int(settings.SCREEN_WIDTH), int(settings.SCREEN_HEIGHT)],
-					'music_volume': float(settings.MUSIC_VOLUME),
-					'sfx_volume': float(settings.SFX_VOLUME),
-				},
 				'level': self.level.serialize_state(),
 			}
 			save_system.save_game_slot(int(slot), payload)
@@ -124,36 +122,10 @@ class Game:
 		data = save_system.load_game_slot(int(slot)) or {}
 		if not isinstance(data, dict):
 			return
-		saved_settings = data.get('settings', {}) if isinstance(data.get('settings', {}), dict) else {}
 
-		# Apply saved settings BEFORE recreating Level
-		try:
-			res = saved_settings.get('resolution')
-			if isinstance(res, (list, tuple)) and len(res) == 2:
-				settings.set_resolution(int(res[0]), int(res[1]))
-				self.screen = pygame.display.set_mode((settings.SCREEN_WIDTH, settings.SCREEN_HEIGHT))
-				self.menu.set_display_surface()
-				if self.pause_menu:
-					self.pause_menu.set_display_surface()
-		except Exception:
-			pass
-		try:
-			if 'music_volume' in saved_settings:
-				settings.MUSIC_VOLUME = float(saved_settings['music_volume'])
-			if 'sfx_volume' in saved_settings:
-				settings.SFX_VOLUME = float(saved_settings['sfx_volume'])
-		except Exception:
-			pass
-
-		# Persist settings too
-		try:
-			save_system.save_settings({
-				'resolution': [int(settings.SCREEN_WIDTH), int(settings.SCREEN_HEIGHT)],
-				'music_volume': float(settings.MUSIC_VOLUME),
-				'sfx_volume': float(settings.SFX_VOLUME),
-			})
-		except Exception:
-			pass
+		# NOTE: We intentionally DO NOT apply per-slot settings.
+		# Settings are global (stored in savegame/config.json) and should not
+		# revert when the player loads a different slot.
 
 		# Stop current gameplay music if any
 		if from_pause:
@@ -265,6 +237,32 @@ class Game:
 							self.resume_from_pause()
 						elif action == 'menu':
 							self.return_to_menu()
+						elif isinstance(action, tuple) and action[0] == 'resolution':
+							w, h = action[1]
+							# Resolution changes require a Level rebuild because many modules
+							# use `from settings import *`.
+							saved_level_state = None
+							try:
+								if self.level is not None:
+									saved_level_state = self.level.serialize_state()
+							except Exception:
+								saved_level_state = None
+							try:
+								if self.level is not None and hasattr(self.level, 'music'):
+									self.level.music.stop()
+							except Exception:
+								pass
+							self.apply_resolution(w, h)
+							self._reload_gameplay_modules()
+							self.start_game(saved_level_state=saved_level_state)
+							self.enter_pause()
+							self.last_game_frame = None
+						elif isinstance(action, tuple) and action[0] == 'music_volume':
+							try:
+								if self.level is not None and hasattr(self.level, 'music'):
+									self.level.music.set_volume(float(action[1]))
+							except Exception:
+								pass
 						elif isinstance(action, tuple) and action[0] == 'save_slot':
 							slot = int(action[1])
 							self.save_current_game_to_slot(slot)
