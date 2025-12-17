@@ -4,7 +4,7 @@ from settings import *
 class Menu:
     def __init__(self, font):
         self.font = font
-        self.options = ['Mulai Game', 'Keluar']
+        self.options = ['Mulai Game', 'riwayat', 'Keluar']
         self.index = 0
         self.start_y = 340
         self.spacing = 60
