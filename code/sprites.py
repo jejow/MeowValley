@@ -5,6 +5,12 @@ from timer import Timer
 
 class Generic(pygame.sprite.Sprite):
 	def __init__(self, pos, surf, groups, z = LAYERS['main']):
+		# NOTE: `Sprite.groups()` order is not guaranteed.
+		# Many game objects need a stable reference to the primary render group.
+		if isinstance(groups, (list, tuple)) and len(groups) > 0:
+			self.draw_group = groups[0]
+		else:
+			self.draw_group = groups
 		super().__init__(groups)
 		self.image = surf
 		self.rect = self.image.get_rect(topleft = pos)
@@ -103,14 +109,14 @@ class Tree(Generic):
 			Particle(
 				pos = random_apple.rect.topleft,
 				surf = random_apple.image, 
-				groups = self.groups()[0], 
+				groups = self.draw_group, 
 				z = LAYERS['fruit'])
 			self.player_add('apple')
 			random_apple.kill()
 
 	def check_death(self):
 		if self.health <= 0:
-			Particle(self.rect.topleft, self.image, self.groups()[0], LAYERS['fruit'], 300)
+			Particle(self.rect.topleft, self.image, self.draw_group, LAYERS['fruit'], 300)
 			self.image = self.stump_surf
 			self.rect = self.image.get_rect(midbottom = self.rect.midbottom)
 			self.hitbox = self.rect.copy().inflate(-10,-self.rect.height * 0.6)
@@ -153,7 +159,7 @@ class Tree(Generic):
 			Generic(
 				pos=(x, y),
 				surf=self.apple_surf,
-				groups=[self.apple_sprites, self.groups()[0]],
+				groups=[self.apple_sprites, self.draw_group],
 				z=LAYERS['fruit'])
 			placed_rects.append(candidate_rect)
 			created += 1
@@ -166,7 +172,7 @@ class Tree(Generic):
 			Generic(
 				pos=(x, y),
 				surf=self.apple_surf,
-				groups=[self.apple_sprites, self.groups()[0]],
+				groups=[self.apple_sprites, self.draw_group],
 				z=LAYERS['fruit'])
 
 	def serialize_state(self):
@@ -213,7 +219,7 @@ class Tree(Generic):
 				Generic(
 					pos=(x, y),
 					surf=self.apple_surf,
-					groups=[self.apple_sprites, self.groups()[0]],
+					groups=[self.apple_sprites, self.draw_group],
 					z=LAYERS['fruit'])
 		else:
 			# Fallback: regenerate
